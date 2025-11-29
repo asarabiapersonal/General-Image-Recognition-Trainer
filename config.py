@@ -1,5 +1,5 @@
 # config.py
-
+import os
 import torch
 
 # -- Training Hyperparameters --
@@ -12,7 +12,6 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MANUAL_SEED = 42
 
 # -- File Paths --
-<<<<<<< HEAD
 BASE_DIR = "C:/Users/adams/OneDrive/Documents/AI/"
 TRAIN_DIR = os.path.join(BASE_DIR, "PetImages")
 TEST_DIR = os.path.join(BASE_DIR, "PetImages2")
@@ -32,10 +31,3 @@ COCO_TEST_IMG_DIR = "C:/Users/adams/OneDrive/Documents/AI/TPV/valid/"
 # Path to the .json annotation files
 COCO_TRAIN_ANN = "C:/Users/adams/OneDrive/Documents/AI/TPV/train/_annotations.coco.json"
 COCO_TEST_ANN = "C:/Users/adams/OneDrive/Documents/AI/TPV/valid/_annotations.coco.json"
-=======
-TRAIN_DIR = "C:/Users/adams/OneDrive/Documents/AI/PetImages"
-TEST_DIR = "C:/Users/adams/OneDrive/Documents/AI/PetImages2"
-MODEL_SAVE_PATH = "saved_models/pet_classifier.pth"
-
-  
->>>>>>> parent of 43cbc7e (restructure)

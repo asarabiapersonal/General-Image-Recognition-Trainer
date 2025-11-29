@@ -1,8 +1,5 @@
-# utils.py
-
 import matplotlib.pyplot as plt
 import numpy as np
-<<<<<<< HEAD
 import psutil
 import torch
 import streamlit as st
@@ -55,8 +52,6 @@ def get_system_metrics():
 
 def stop_execution():
     config.ALIVE = False    
-=======
->>>>>>> parent of 43cbc7e (restructure)
 
 def imshow(img, title=None):
     img = img * 0.5 + 0.5
@@ -66,7 +61,6 @@ def imshow(img, title=None):
         plt.title(title)
     plt.pause(0.001)
 
-<<<<<<< HEAD
 # --- FILE & MODEL MANAGEMENT ---
 
 def get_next_model_filename():
@@ -203,36 +197,3 @@ def display_active_model_info():
         if 'val_accuracy' in metrics:
             st.sidebar.metric("Saved Accuracy", f"{metrics['val_accuracy']:.2f}%")
         st.sidebar.markdown("---")
-=======
-
-def setup_plot():
-    """Sets up the interactive plot for training."""
-    plt.ion()
-    fig, axis = plt.subplots(figsize=(10, 5))
-    ax2 = axis.twinx()
-
-    fig, axis = plt.subplots(figsize=(10, 5))
-    ax2 = axis.twinx()
-
-    # Initialize empty plots with labels for the legend
-    line, = axis.plot(stepTracker, batchTracker, 'b-', label='Training Loss')
-    line2, = ax2.plot(val_step, val_accuracy, 'r-o', label='Validation Accuracy') # Added 'o' marker
-
-    # Add titles and labels
-    axis.set_title('Training Progress')
-    axis.set_xlabel('Training Step')
-    axis.set_ylabel('Loss', color='b')
-    ax2.set_ylabel('Accuracy (%)', color='r')
-
-    # Style ticks
-    axis.tick_params(axis='y', labelcolor='b')
-    ax2.tick_params(axis='y', labelcolor='r')
-    axis.grid(True)
-
-    # Create a combined legend
-    lines = [line, line2]
-    axis.legend(lines, [l.get_label() for l in lines])
-
-    # ... rest of setup ...
-    return fig, axis, ax2
->>>>>>> parent of 43cbc7e (restructure)

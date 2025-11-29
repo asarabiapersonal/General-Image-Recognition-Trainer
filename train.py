@@ -1,9 +1,6 @@
-# train.py
-
 import torch
 import torch.optim as optim
 import torch.nn as nn
-<<<<<<< HEAD
 import streamlit as st
 import os
 import numpy as np
@@ -12,16 +9,13 @@ import random
 import time
 import tkinter as tk
 from tkinter import filedialog
-=======
-import matplotlib.pyplot as plt
->>>>>>> parent of 43cbc7e (restructure)
 
 # Import from our other files
 import config
+import utils
 from model import Net
 from dataloader import get_dataloaders, get_custom_dataloader_from_path
 
-<<<<<<< HEAD
 # 1. Streamlit Configuration
 st.set_page_config(page_title="Model Monitor", layout="wide")
 
@@ -29,16 +23,10 @@ st.set_page_config(page_title="Model Monitor", layout="wide")
 if 'net' not in st.session_state:
     st.session_state['net'] = Net(num_classes=2).to(config.DEVICE)
     print("Model initialized in Session State.")
-=======
-stepTracker = []
-batchTracker = []
-val_step = []
-val_accuracy = []
 
->>>>>>> parent of 43cbc7e (restructure)
+if 'optimizer' not in st.session_state:
+    st.session_state['optimizer'] = optim.Adam(st.session_state['net'].parameters(), lr=config.LEARNING_RATE)
 
-
-<<<<<<< HEAD
 if 'last_loaded_path' not in st.session_state:
     st.session_state['last_loaded_path'] = None
 
@@ -76,22 +64,11 @@ if 'log_history' not in st.session_state:
 @st.cache_resource
 def load_default_data(batch_size):
     return get_dataloaders(
-=======
-def main():
-    """Main function to run the training and validation."""
-    torch.manual_seed(config.MANUAL_SEED)
-    
-    # 1. Load Data
-    trainloader, testloader, class_names = get_dataloaders(
->>>>>>> parent of 43cbc7e (restructure)
         train_dir=config.TRAIN_DIR,
         test_dir=config.TEST_DIR,
         batch_size=batch_size
     )
-    print("Data loaded successfully.")
-    print(f"Classes: {class_names}")
 
-<<<<<<< HEAD
 criterion = nn.NLLLoss()
 
 # --- HELPER: TERMINAL LOGGING ---
@@ -228,23 +205,11 @@ def train_model(trainloader, loss_chart, metric_placeholders, terminal_placehold
 
     for epoch in range(epochs): 
         net.train()
-=======
-    # 2. Initialize Model, Optimizer, Loss
-    net = Net().to(config.DEVICE)
-    optimizer = optim.Adam(net.parameters(), lr=config.LEARNING_RATE)
-    criterion = nn.NLLLoss()
-
-    
-
-    print("Model initialized.")
-    print("Starting training...")
-    for epoch in range(config.EPOCHS):
-        net.train() # Set model to training mode
->>>>>>> parent of 43cbc7e (restructure)
         running_loss = 0.0
-
+        
         for i, data in enumerate(trainloader):
             inputs, labels = data[0].to(config.DEVICE), data[1].to(config.DEVICE)
+            
             optimizer.zero_grad()
             output = net(inputs)
             loss = criterion(output, labels)
@@ -252,17 +217,12 @@ def train_model(trainloader, loss_chart, metric_placeholders, terminal_placehold
             optimizer.step()
 
             running_loss += loss.item()
-<<<<<<< HEAD
             
             plot_every = 10 
-=======
-            plot_every = 100 # Plot loss every 100 batches
->>>>>>> parent of 43cbc7e (restructure)
             if (i + 1) % plot_every == 0:
                 avg_loss = running_loss / plot_every
                 final_avg_loss = avg_loss
                 current_step = i + 1 + (epoch * len(trainloader))
-<<<<<<< HEAD
                 
                 trackers['stepTracker'].append(current_step)
                 trackers['batchTracker'].append(avg_loss)
@@ -281,56 +241,8 @@ def train_model(trainloader, loss_chart, metric_placeholders, terminal_placehold
                 header_placeholder.markdown(f"## 🟢 Training: {msg}")
                 print(msg) 
                 
-=======
-                print(f'[{epoch + 1}, {i + 1:5d}] loss: {avg_loss:.3f}')
-
-                # Append new data points for the loss plot
-                stepTracker.append(current_step)
-                batchTracker.append(avg_loss)
->>>>>>> parent of 43cbc7e (restructure)
                 running_loss = 0.0
-
-        print(f'Finished training epoch: {epoch + 1}')
-
-        # --- VALIDATION ---
-        net.eval() # Set model to evaluation mode
-        correct = 0
-        total = 0
-        with torch.no_grad():
-            for data in testloader:
-                images, labels = data[0].to(config.DEVICE), data[1].to(config.DEVICE)
-                outputs = net(images)
-                _, predicted = torch.max(outputs.data, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-
-        # Calculate overall accuracy for the epoch
-        overall_accuracy = 100 * correct / total
-        print(f'Accuracy of the network on the test images: {overall_accuracy:.2f} %')
-
-        # Append data for the accuracy plot
-        # We use the last step of the epoch for the x-axis value
-        val_step.append(len(trainloader) * (epoch + 1))
-        val_accuracy.append(overall_accuracy)
-
-        # --- UPDATE PLOT INTERACTIVELY ---
-        # Update data for both lines
-        line.set_xdata(stepTracker)
-        line.set_ydata(batchTracker)
-        line2.set_xdata(val_step)
-        line2.set_ydata(val_accuracy)
-
-        # Rescale axes
-        axis.relim()
-        axis.autoscale_view()
-        ax2.relim()
-        ax2.autoscale_view()
-
-        # Redraw the plot
-        fig.canvas.draw()
-        fig.canvas.flush_events()
     
-<<<<<<< HEAD
     log_message("--- Training Finished ---", terminal_placeholder)
     return final_avg_loss
 
@@ -623,14 +535,6 @@ def main():
     metric_ram.metric("RAM", f"{ram}%")
     metric_gpu_name.caption(f"**GPU:** {gpu_info}")
     metric_gpu_mem.metric("VRAM", gpu_mem)
-=======
-    print("Finished training.")
-
-    # 4. Save the model
-    torch.save(net.state_dict(), config.MODEL_SAVE_PATH)
-    print(f"Model saved to {config.MODEL_SAVE_PATH}")
-
->>>>>>> parent of 43cbc7e (restructure)
 
 if __name__ == '__main__':
     main()

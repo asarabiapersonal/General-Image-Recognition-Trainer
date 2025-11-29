@@ -16,19 +16,12 @@ class Net(nn.Module):
         self.conv3 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
         self.pool3 = nn.MaxPool2d(2, stride=2)
         
-<<<<<<< HEAD
         self.fc1 = nn.Linear(65536, 512)
         self.dropout1 = nn.Dropout(0.5) 
         self.fc2 = nn.Linear(512, 128)
         
         # DYNAMIC OUTPUT LAYER
         self.fc3 = nn.Linear(128, num_classes)
-=======
-        # Fully connected layers
-        self.fc1 = nn.Linear(25088, 120)
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 2)
->>>>>>> parent of 43cbc7e (restructure)
 
     def forward(self, x):
         # ... (Forward pass stays the same) ...

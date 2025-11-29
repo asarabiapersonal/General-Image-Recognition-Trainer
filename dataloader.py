@@ -76,13 +76,10 @@ class TransformedDataset(torch.utils.data.Dataset):
     def __init__(self, subset, transform=None):
         self.subset = subset
         self.transform = transform
-<<<<<<< HEAD
         # Forward classes if available in subset
         if hasattr(subset, 'classes'):
             self.classes = subset.classes
             
-=======
->>>>>>> parent of 43cbc7e (restructure)
     def __getitem__(self, index):
         x, y = self.subset[index]
         if self.transform:
@@ -93,7 +90,6 @@ class TransformedDataset(torch.utils.data.Dataset):
 
 # --- Default Dataloader ---
 def get_dataloaders(train_dir, test_dir, batch_size):
-<<<<<<< HEAD
     if config.USE_COCO_FORMAT:
         print(f"Loading COCO Data from: {config.COCO_TRAIN_ANN}")
         trainset = CocoClassificationDataset(
@@ -114,11 +110,6 @@ def get_dataloaders(train_dir, test_dir, batch_size):
         trainset = TransformedDataset(trainsetOG, transform=transform_train)
         testset = TransformedDataset(testsetOG, transform=transform_test)
         class_names = trainsetOG.classes
-=======
-    """Creates and returns the training and testing dataloaders."""
-    trainsetOG = ImageFolder(root=train_dir)
-    testsetOG = ImageFolder(root=test_dir)
->>>>>>> parent of 43cbc7e (restructure)
 
     workers = 0 
     trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
