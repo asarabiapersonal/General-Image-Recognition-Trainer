@@ -13,6 +13,7 @@ import config
 from model import Net
 import torch.optim as optim
 import gc
+from PIL import Image  # <--- Added Import for resizing
 
 # --- CHARTING HELPERS ---
 def create_confusion_matrix_chart(y_true, y_pred, class_names):
@@ -30,6 +31,77 @@ def create_confusion_matrix_chart(y_true, y_pred, class_names):
         return fig
     except Exception as e:
         return None
+
+def visualize_feature_maps(model, input_tensor, layer_names=['conv1', 'conv2', 'conv3']):
+    """
+    Passes an image through the model and visualizes the feature maps.
+    UPSCALES feature maps to 128x128 for clear viewing.
+    """
+    activations = {}
+    hooks = []
+
+    def get_activation(name):
+        def hook(model, input, output):
+            activations[name] = output.detach()
+        return hook
+
+    # Register hooks
+    for name, layer in model.named_children():
+        if name in layer_names:
+            h = layer.register_forward_hook(get_activation(name))
+            hooks.append(h)
+
+    # Forward pass
+    model.eval()
+    with torch.no_grad():
+        if input_tensor.device != config.DEVICE:
+            input_tensor = input_tensor.to(config.DEVICE)
+        model(input_tensor)
+
+    # Cleanup hooks
+    for h in hooks:
+        h.remove()
+
+    # Visualization
+    cmap = plt.get_cmap('viridis')
+
+    for layer_name in layer_names:
+        if layer_name in activations:
+            act = activations[layer_name].squeeze(0) # [Channels, H, W]
+            num_channels = act.shape[0]
+            size = act.shape[1]
+            
+            st.caption(f"**Layer {layer_name}** (Native: {size}x{size} -> Display: 128x128)")
+            
+            # Show first 8 filters
+            cols = st.columns(8)
+            for i in range(8):
+                if i < num_channels:
+                    with cols[i]:
+                        # Normalize 0-1
+                        channel_image = act[i]
+                        channel_image -= channel_image.min()
+                        if channel_image.max() > 0:
+                            channel_image /= channel_image.max()
+                        
+                        img_np = channel_image.cpu().numpy()
+                        
+                        # Apply Colormap: (H, W) -> (H, W, 4) RGBA Floats (0.0-1.0)
+                        colored_img = cmap(img_np)
+                        
+                        # Convert to Uint8 (0-255) for PIL
+                        colored_img_uint8 = (colored_img * 255).astype(np.uint8)
+                        
+                        # Create PIL Image
+                        pil_img = Image.fromarray(colored_img_uint8)
+                        
+                        # RESIZE to 128x128
+                        # We use Nearest Neighbor to keep the 'features' sharp and pixelated
+                        # so you can see exactly what the network is looking at.
+                        pil_img = pil_img.resize((128, 128), resample=Image.NEAREST)
+                        
+                        # Display
+                        st.image(pil_img, use_container_width=True, clamp=True)
 
 def get_model_summary(model, input_size=(1, 3, 128, 128)):
     try:
@@ -79,8 +151,15 @@ def get_next_model_filename():
     new_filename = f"{config.MODEL_NAME_BASE}_{next_num}.pth"
     return os.path.join(config.MODEL_SAVE_DIR, new_filename)
 
-def save_checkpoint(net, optimizer, epochs, lr, batch_size, metrics):
-    save_path = get_next_model_filename()
+def save_checkpoint(net, optimizer, epochs, lr, batch_size, metrics, custom_name=None):
+    if custom_name and custom_name.strip() != "":
+        filename = custom_name.strip()
+        if not filename.endswith('.pth'):
+            filename += '.pth'
+        save_path = os.path.join(config.MODEL_SAVE_DIR, filename)
+    else:
+        save_path = get_next_model_filename()
+        
     trackers = st.session_state.get('trackers', {})
     
     plotting_history = {
@@ -93,9 +172,9 @@ def save_checkpoint(net, optimizer, epochs, lr, batch_size, metrics):
         'cm_pred': list(trackers.get('cm_pred', []))
     }
 
-    # Retrieve custom paths from session state
     custom_test_path = st.session_state.get('custom_test_path', None)
     custom_train_path = st.session_state.get('custom_train_path', None)
+    custom_val_path = st.session_state.get('custom_val_path', None)
 
     checkpoint = {
         'model_state_dict': net.state_dict(),
@@ -105,7 +184,8 @@ def save_checkpoint(net, optimizer, epochs, lr, batch_size, metrics):
             'learning_rate': lr,
             'batch_size': batch_size,
             'custom_test_path': custom_test_path,
-            'custom_train_path': custom_train_path # Save training path
+            'custom_train_path': custom_train_path,
+            'custom_val_path': custom_val_path
         },
         'metrics': metrics,
         'plotting_history': plotting_history
@@ -118,6 +198,23 @@ def save_checkpoint(net, optimizer, epochs, lr, batch_size, metrics):
     st.session_state['active_model_meta'] = checkpoint
     
     st.success(f"Model saved to {save_path}")
+
+def rename_model(old_filename, new_name):
+    if not new_name:
+        return None, "New name cannot be empty."
+    if not new_name.endswith('.pth'):
+        new_name += '.pth'
+    old_path = os.path.join(config.MODEL_SAVE_DIR, old_filename)
+    new_path = os.path.join(config.MODEL_SAVE_DIR, new_name)
+    if not os.path.exists(old_path):
+        return None, "Original file not found."
+    if os.path.exists(new_path):
+        return None, "A file with that name already exists."
+    try:
+        os.rename(old_path, new_path)
+        return new_path, None 
+    except Exception as e:
+        return None, str(e)
 
 def load_specific_model(file_path):
     if os.path.exists(file_path):
@@ -138,16 +235,17 @@ def load_specific_model(file_path):
                 trackers['cm_true'] = history.get('cm_true', [])
                 trackers['cm_pred'] = history.get('cm_pred', [])
 
-                # LOAD CUSTOM PATHS IF EXIST
                 hyperparams = loaded_data.get('hyperparameters', {})
                 st.session_state['custom_test_path'] = hyperparams.get('custom_test_path', None)
                 st.session_state['custom_train_path'] = hyperparams.get('custom_train_path', None)
+                st.session_state['custom_val_path'] = hyperparams.get('custom_val_path', None)
 
             else:
                 state_dict = loaded_data
                 st.session_state['active_model_meta'] = {}
                 st.session_state['custom_test_path'] = None
                 st.session_state['custom_train_path'] = None
+                st.session_state['custom_val_path'] = None
 
             saved_num_classes = state_dict['fc3.weight'].shape[0]
             current_num_classes = st.session_state['net'].fc3.out_features
@@ -184,13 +282,13 @@ def display_active_model_info():
         st.sidebar.info(f"**Batch:** {hp.get('batch_size', '-')}")
         st.sidebar.info(f"**LR:** {hp.get('learning_rate', '-')}")
         
-        # Display Custom Paths
         c_train = hp.get('custom_train_path', None)
+        c_val = hp.get('custom_val_path', None)
         c_test = hp.get('custom_test_path', None)
-        if c_train:
-             st.sidebar.caption(f"**Train Folder:** ...{os.path.basename(c_train)}")
-        if c_test:
-             st.sidebar.caption(f"**Test Folder:** ...{os.path.basename(c_test)}")
+        
+        if c_train: st.sidebar.caption(f"**Train:** ...{os.path.basename(c_train)}")
+        if c_val: st.sidebar.caption(f"**Valid:** ...{os.path.basename(c_val)}")
+        if c_test: st.sidebar.caption(f"**Test:** ...{os.path.basename(c_test)}")
 
         if 'final_loss' in metrics:
             st.sidebar.metric("Saved Loss", f"{metrics['final_loss']:.4f}")

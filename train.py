@@ -9,12 +9,18 @@ import random
 import time
 import tkinter as tk
 from tkinter import filedialog
+from PIL import Image, ImageOps
+
+try:
+    from streamlit_drawable_canvas import st_canvas
+except ImportError:
+    st.error("Please install the canvas library: pip install streamlit-drawable-canvas")
 
 # Import from our other files
 import config
 import utils
 from model import Net
-from dataloader import get_dataloaders, get_custom_dataloader_from_path
+from dataloader import get_dataloaders, get_custom_dataloader_from_path, transform_test
 
 # 1. Streamlit Configuration
 st.set_page_config(page_title="Model Monitor", layout="wide")
@@ -30,7 +36,6 @@ if 'optimizer' not in st.session_state:
 if 'last_loaded_path' not in st.session_state:
     st.session_state['last_loaded_path'] = None
 
-# New state to track the filename specifically for the dropdown logic
 if 'current_loaded_filename' not in st.session_state:
     st.session_state['current_loaded_filename'] = None
 
@@ -45,6 +50,8 @@ if 'custom_test_path' not in st.session_state:
     st.session_state['custom_test_path'] = None
 if 'custom_train_path' not in st.session_state:
     st.session_state['custom_train_path'] = None
+if 'custom_val_path' not in st.session_state:
+    st.session_state['custom_val_path'] = None
 
 if 'trackers' not in st.session_state:
     st.session_state['trackers'] = {
@@ -84,13 +91,81 @@ def log_message(message, terminal_placeholder):
 
 # --- UI HELPER: FOLDER SELECTION ---
 def select_folder():
-    """Opens a local system dialog to select a folder."""
     root = tk.Tk()
     root.withdraw()
     root.wm_attributes('-topmost', 1)
     folder_path = filedialog.askdirectory(master=root)
     root.destroy()
     return folder_path
+
+# --- DIGIT DRAWER DIALOG ---
+@st.dialog("Write Digits / Draw Input")
+def draw_digit_interface(class_names):
+    st.caption("Draw on the canvas below to run inference with the selected model.")
+    col_tools1, col_tools2 = st.columns(2)
+    stroke_width = col_tools1.slider("Pen Width", 1, 30, 10)
+    zoom_scale = col_tools2.select_slider("Zoom Level", options=[1, 2, 3, 4], value=2)
+    canvas_size = 128 * zoom_scale
+    
+    if os.path.exists(config.MODEL_SAVE_DIR):
+        model_files = [f for f in os.listdir(config.MODEL_SAVE_DIR) if f.endswith('.pth')]
+        model_files.sort(reverse=True)
+        current_idx = 0
+        if st.session_state['current_loaded_filename'] in model_files:
+            current_idx = model_files.index(st.session_state['current_loaded_filename'])
+        selected_model = st.selectbox("Select Model for Inference", model_files, index=current_idx)
+        
+        if selected_model != st.session_state['current_loaded_filename']:
+            full_path = os.path.join(config.MODEL_SAVE_DIR, selected_model)
+            utils.load_specific_model(full_path)
+            st.session_state['current_loaded_filename'] = selected_model
+            st.session_state['last_loaded_path'] = full_path
+            
+    st.divider()
+
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",
+        stroke_width=stroke_width,
+        stroke_color="#000000",
+        background_color="#FFFFFF",
+        height=canvas_size,
+        width=canvas_size,
+        drawing_mode="freedraw",
+        key="canvas",
+    )
+
+    if st.button("Predict Drawing", type="primary"):
+        if canvas_result.image_data is not None:
+            img_data = canvas_result.image_data
+            image = Image.fromarray(img_data.astype('uint8'), mode="RGBA")
+            background = Image.new("RGB", image.size, (255, 255, 255))
+            background.paste(image, mask=image.split()[3]) 
+            image = background
+            image = image.resize((128, 128))
+            input_tensor = transform_test(image)
+            input_tensor = input_tensor.unsqueeze(0).to(config.DEVICE)
+            
+            net = st.session_state['net']
+            net.eval()
+            with torch.no_grad():
+                output = net(input_tensor)
+                probs = torch.exp(output)
+                confidences, predicted = torch.max(probs, 1)
+                
+            pred_idx = predicted.item()
+            conf_score = confidences.item() * 100
+            
+            if pred_idx < len(class_names):
+                pred_label = class_names[pred_idx]
+            else:
+                pred_label = f"Unknown Class ID {pred_idx}"
+            
+            st.success(f"Prediction: **{pred_label}**")
+            st.info(f"Confidence: **{conf_score:.2f}%**")
+            st.image(image, caption="Resized Input (128x128)", width=128)
+            
+            # Show Feature Maps
+            utils.visualize_feature_maps(net, input_tensor)
 
 # --- EXECUTION FUNCTIONS ---
 
@@ -188,6 +263,12 @@ def run_inference(default_testloader, default_class_names):
             st.markdown(f"**Actual:** {true_label}")
             st.markdown(f"**Pred:** :{header_color}[{pred_label}] ({confidence_pct:.1f}%)")
             st.caption(result_text)
+            
+            # --- NEW: Feature Maps Expander ---
+            with st.expander(f"👁️ View Feature Maps"):
+                # Get the single image tensor back [1, 3, 128, 128]
+                single_input = images[i].unsqueeze(0).to(config.DEVICE)
+                utils.visualize_feature_maps(net, single_input)
 
 def train_model(trainloader, loss_chart, metric_placeholders, terminal_placeholder, header_placeholder, epochs, lr, batch_size):
     net = st.session_state['net']
@@ -303,7 +384,13 @@ def main():
     header_placeholder = st.empty()
     header_placeholder.title("🛡️ Model Performance & Health Monitor")
     
-    # --- SIDEBAR: SYSTEM & INFO ---
+    current_model_path = st.session_state.get('last_loaded_path')
+    if current_model_path:
+        model_name = os.path.basename(current_model_path)
+        st.write(f"**📂 Currently Loaded Model:** `{model_name}`")
+    else:
+        st.write("**📂 Currently Loaded Model:** `None (New/Untrained)`")
+    
     st.sidebar.markdown("### 🖥️ System Monitor")
     m_col1, m_col2 = st.sidebar.columns(2)
     metric_cpu = m_col1.empty()
@@ -319,46 +406,34 @@ def main():
         summary_txt = utils.get_model_summary(st.session_state['net'], input_size)
         st.code(summary_txt, language="text")
 
-    # --- SIDEBAR: HYPERPARAMETERS ---
     st.sidebar.header("Hyperparameters")
     hp_batch_size = st.sidebar.slider("Batch Size", 16, 128, config.BATCH_SIZE, 16)
     hp_epochs = st.sidebar.slider("Epochs", 1, 20, config.EPOCHS)
     hp_lr = st.sidebar.number_input("Learning Rate", 0.0001, 0.1, config.LEARNING_RATE, format="%.4f", step=0.0005)
     
-    # --- LOAD DATA LOGIC ---
-    # Default Load
     trainloader, testloader, class_names = load_default_data(hp_batch_size)
     
-    # Check for Custom Train Path override
     if st.session_state.get('custom_train_path'):
         try:
             custom_train_path = st.session_state['custom_train_path']
-            # Using is_train=True to get augmentations and shuffle
             custom_train_loader, custom_train_classes = get_custom_dataloader_from_path(
                 custom_train_path, batch_size=hp_batch_size, is_train=True
             )
-            # Override
             trainloader = custom_train_loader
-            class_names = custom_train_classes # Classes defined by training folder
-            # st.sidebar.info(f"Train: {os.path.basename(custom_train_path)}")
+            class_names = custom_train_classes 
         except Exception as e:
-            st.error(f"Error loading custom training data: {e}. Reverting to default.")
+            st.error(f"Error loading custom training data: {e}")
 
-    # Check for Custom Test Path override
-    if st.session_state.get('custom_test_path'):
+    if st.session_state.get('custom_val_path'):
         try:
-            custom_test_path = st.session_state['custom_test_path']
-            # Using is_train=False for test data
-            custom_test_loader, _ = get_custom_dataloader_from_path(
-                custom_test_path, batch_size=hp_batch_size, is_train=False
+            custom_val_path = st.session_state['custom_val_path']
+            custom_val_loader, _ = get_custom_dataloader_from_path(
+                custom_val_path, batch_size=hp_batch_size, is_train=False
             )
-            # Override
-            testloader = custom_test_loader
-            # st.sidebar.info(f"Test: {os.path.basename(custom_test_path)}")
+            testloader = custom_val_loader
         except Exception as e:
-            st.error(f"Error loading custom test data: {e}. Reverting to default.")
+            st.error(f"Error loading custom validation data: {e}")
 
-    # --- SAFETY CHECK: CLASS MISMATCH ---
     current_num_classes = len(class_names)
     model_output_features = st.session_state['net'].fc3.out_features
     if model_output_features != current_num_classes:
@@ -371,7 +446,6 @@ def main():
     
     trackers = st.session_state['trackers']
 
-    # --- MAIN PAGE: CHARTS ---
     st.markdown("### 📈 Training & Validation Charts")
     col_chart1, col_chart2 = st.columns(2)
     
@@ -400,28 +474,43 @@ def main():
         terminal_placeholder.code("Ready...", language="bash")
 
     model_output_features = st.session_state['net'].fc3.out_features
-    if trackers['cm_true'] and trackers['cm_pred'] and int(model_output_features) < 10:
+    if trackers['cm_true'] and trackers['cm_pred'] and int(model_output_features) < 12:
         st.markdown("### 📊 Confusion Matrix")
         fig_cm = utils.create_confusion_matrix_chart(trackers['cm_true'], trackers['cm_pred'], class_names)
         if fig_cm:
             st.pyplot(fig_cm, use_container_width=True)
-    elif model_output_features >= 10:
+    elif model_output_features >= 12:
         st.info("Confusion Matrix display is disabled for more than 10 classes.")
 
-    # --- SIDEBAR: EXECUTION CONTROLS ---
     st.sidebar.header("Execution Controls")
-    
-    # 1. Mode Selection
     col_check1, col_check2 = st.sidebar.columns(2)
     do_train = col_check1.checkbox("Train Model", value=True)
+    if do_train:
+        if col_check1.button("Select Train Folder"):
+            folder = select_folder()
+            if folder:
+                st.session_state['custom_train_path'] = folder
+                st.toast(f"Train Source: {folder}")
+                st.rerun()
+        if st.session_state.get('custom_train_path'):
+            col_check1.caption(f"`{st.session_state['custom_train_path']}`")
+
     can_validate = st.session_state['model_is_ready'] or do_train
     do_validate = col_check2.checkbox("Validate Model", value=False, disabled=not can_validate)
+    if do_validate:
+        if col_check2.button("Select Valid Folder"):
+            folder = select_folder()
+            if folder:
+                st.session_state['custom_val_path'] = folder
+                st.toast(f"Val Source: {folder}")
+                st.rerun()
+        if st.session_state.get('custom_val_path'):
+            col_check2.caption(f"`{st.session_state['custom_val_path']}`")
 
-    # 2. Run Buttons
-    col_run1, col_run2 = st.sidebar.columns(2)
-    
-    # BUTTON: Run Execution
-    if col_run1.button("Run Execution"):
+    new_model_name = st.sidebar.text_input("Name for New Model (Optional)", placeholder="e.g. my_best_model")
+
+    if st.sidebar.button("Run Execution"):
+        
         session_metrics = {}
         if not do_train:
              session_metrics = st.session_state['active_model_meta'].get('metrics', {}).copy()
@@ -472,64 +561,75 @@ def main():
                 hp_epochs,
                 hp_lr,
                 hp_batch_size,
-                session_metrics
+                session_metrics,
+                custom_name=new_model_name 
             )
             if do_validate:
                 st.rerun()
 
-    # BUTTON: Select Train Folder (Moved here as requested)
-    if col_run2.button("Select Train Folder"):
-        folder = select_folder()
-        if folder:
-            st.session_state['custom_train_path'] = folder
-            st.toast(f"Train Source: {os.path.basename(folder)}")
-            st.rerun()
-
-    # Show active train path
-    if st.session_state.get('custom_train_path'):
-        st.sidebar.caption(f"Train: `{os.path.basename(st.session_state['custom_train_path'])}`")
-
     st.sidebar.markdown("---")
 
-    # --- SIDEBAR: MODEL MANAGEMENT ---
     st.sidebar.header("Model Management")
     
     if not os.path.exists(config.MODEL_SAVE_DIR):
         os.makedirs(config.MODEL_SAVE_DIR)
         
     model_files = [f for f in os.listdir(config.MODEL_SAVE_DIR) if f.endswith('.pth')]
-    model_files.sort(reverse=True) # Sort newest first usually better
+    model_files.sort(reverse=True)
     
-    # AUTO-LOAD LOGIC for Dropdown
     selected_file_name = st.sidebar.selectbox("Select Model File", model_files)
     
-    # Track current loaded file to detect changes
     if selected_file_name and selected_file_name != st.session_state['current_loaded_filename']:
         full_path = os.path.join(config.MODEL_SAVE_DIR, selected_file_name)
         utils.load_specific_model(full_path)
-        # Update state so we don't reload on next frame
         st.session_state['current_loaded_filename'] = selected_file_name
         st.session_state['last_loaded_path'] = full_path
         st.rerun()
 
-    # --- TEST BUTTONS (Moved under Model Selection) ---
+    if selected_file_name:
+        new_name_input = st.sidebar.text_input("Rename Current Model", value=selected_file_name.replace('.pth', ''))
+        if st.sidebar.button("Rename"):
+            new_path, err = utils.rename_model(selected_file_name, new_name_input)
+            if new_path:
+                st.success(f"Renamed to {os.path.basename(new_path)}")
+                st.session_state['current_loaded_filename'] = os.path.basename(new_path)
+                st.session_state['last_loaded_path'] = new_path
+                st.rerun()
+            else:
+                st.error(f"Rename failed: {err}")
+
+    if st.sidebar.toggle("Show Drawing Canvas"):
+        draw_digit_interface(class_names)
+
     col_test1, col_test2 = st.sidebar.columns(2)
     
     if col_test1.button("Select Test Folder"):
         folder = select_folder()
         if folder:
             st.session_state['custom_test_path'] = folder
-            st.toast(f"Test Source: {os.path.basename(folder)}")
+            st.toast(f"Test Source: {folder}")
             st.rerun()
 
     if col_test2.button("Test Batch"):
-        run_inference(testloader, class_names)
-    
-    # Show active test path
-    if st.session_state.get('custom_test_path'):
-        st.sidebar.caption(f"Test: `{os.path.basename(st.session_state['custom_test_path'])}`")
+        active_test_loader = testloader 
+        active_test_classes = class_names
+        
+        if st.session_state.get('custom_test_path'):
+             try:
+                custom_path = st.session_state['custom_test_path']
+                t_loader, t_classes = get_custom_dataloader_from_path(
+                    custom_path, batch_size=16, is_train=False
+                )
+                active_test_loader = t_loader
+                active_test_classes = t_classes
+             except Exception as e:
+                 st.error(f"Error loading custom test data: {e}")
 
-    # Initial metric update
+        run_inference(active_test_loader, active_test_classes)
+    
+    if st.session_state.get('custom_test_path'):
+        st.sidebar.caption(f"Test: `{st.session_state['custom_test_path']}`")
+
     cpu, ram, gpu_info, gpu_mem = utils.get_system_metrics()
     metric_cpu.metric("CPU", f"{cpu}%")
     metric_ram.metric("RAM", f"{ram}%")

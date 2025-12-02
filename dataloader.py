@@ -1,5 +1,3 @@
-# data_loader.py
-
 import torch
 import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
@@ -8,6 +6,35 @@ import json
 from PIL import Image
 import config
 import os
+
+# --- HELPER: SAFE IMAGE LOADING ---
+def safe_load_image(img_path):
+    """
+    Loads an image and handles transparency (PNG) correctly.
+    If the image has an Alpha channel, it composites it over a white background.
+    """
+    try:
+        image = Image.open(img_path)
+        
+        # Check if image has Alpha channel (RGBA)
+        if image.mode in ('RGBA', 'LA') or (image.mode == 'P' and 'transparency' in image.info):
+            # Convert to RGBA to ensure alpha channel is accessible
+            image = image.convert('RGBA')
+            
+            # Create a white background image
+            background = Image.new('RGB', image.size, (255, 255, 255))
+            
+            # Paste the image on top, using the alpha channel as a mask
+            # split()[3] gets the Alpha channel
+            background.paste(image, mask=image.split()[3])
+            
+            return background
+        else:
+            return image.convert('RGB')
+    except Exception as e:
+        print(f"Error loading image {img_path}: {e}")
+        # Return a black square as fallback to prevent crashing
+        return Image.new('RGB', (128, 128), (0, 0, 0))
 
 # --- COCO Dataset Class ---
 class CocoClassificationDataset(Dataset):
@@ -46,20 +73,18 @@ class CocoClassificationDataset(Dataset):
     def __getitem__(self, idx):
         file_name, label = self.samples[idx]
         img_path = os.path.join(self.img_dir, file_name)
-        try:
-            image = Image.open(img_path).convert('RGB')
-            if self.transform:
-                image = self.transform(image)
-            return image, label
-        except Exception as e:
-            print(f"Error loading image {file_name}: {e}")
-            # Return a dummy tensor or handle skip (simple error handling)
-            return torch.zeros((3, 128, 128)), label
+        
+        # --- FIX: USE SAFE LOAD ---
+        image = safe_load_image(img_path)
+        
+        if self.transform:
+            image = self.transform(image)
+        return image, label
 
 # --- Transforms ---
 transform_train = transforms.Compose([
-    transforms.RandomResizedCrop(size=128, scale=(0.8, 1.0)),
-    transforms.RandomHorizontalFlip(),
+    transforms.RandomResizedCrop(size=128, scale=(0.5, 1.0)),
+    ##transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
 ])
@@ -71,20 +96,38 @@ transform_test = transforms.Compose([
     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
 ])
 
-# --- Custom Dataset Wrapper (optional, but good practice) ---
+# --- Custom Dataset Wrapper ---
 class TransformedDataset(torch.utils.data.Dataset):
     def __init__(self, subset, transform=None):
         self.subset = subset
         self.transform = transform
-        # Forward classes if available in subset
         if hasattr(subset, 'classes'):
             self.classes = subset.classes
             
     def __getitem__(self, index):
+        # ImageFolder returns (image, label), but standard ImageFolder loads 
+        # using standard PIL.open. We want to intercept this if possible,
+        # but ImageFolder hides the loading logic.
+        # However, for custom paths or if we are iterating manually:
+        
         x, y = self.subset[index]
+        
+        # NOTE: Standard ImageFolder actually handles PNGs okayish (it keeps them RGBA usually),
+        # but our transform expects RGB.
+        # If x is already loaded as PIL Image by ImageFolder, we just need to ensure convert.
+        
+        if hasattr(x, 'convert') and x.mode == 'RGBA':
+             # Handle transparency for folder datasets manually here if needed
+             background = Image.new('RGB', x.size, (255, 255, 255))
+             background.paste(x, mask=x.split()[3])
+             x = background
+        elif hasattr(x, 'convert'):
+             x = x.convert('RGB')
+
         if self.transform:
             x = self.transform(x)
         return x, y
+        
     def __len__(self):
         return len(self.subset)
 
@@ -121,12 +164,10 @@ def get_dataloaders(train_dir, test_dir, batch_size):
 def get_custom_dataloader_from_path(folder_path, batch_size=32, is_train=False):
     """
     Analyzes a folder to determine if it is COCO or ImageFolder structure.
-    is_train: If True, uses training transforms and shuffle=True.
     """
     if not os.path.exists(folder_path):
         raise FileNotFoundError(f"Path does not exist: {folder_path}")
 
-    # Determine Transform and Shuffle based on usage
     active_transform = transform_train if is_train else transform_test
     do_shuffle = True if is_train else False
 
@@ -136,7 +177,6 @@ def get_custom_dataloader_from_path(folder_path, batch_size=32, is_train=False):
     dataset = None
     
     if coco_files:
-        # Assume the first json found is the annotation
         ann_file = os.path.join(folder_path, coco_files[0])
         print(f"Detected COCO format. Annotation: {ann_file}")
         try:
@@ -149,39 +189,34 @@ def get_custom_dataloader_from_path(folder_path, batch_size=32, is_train=False):
             raise RuntimeError(f"Failed to load COCO dataset: {e}")
             
     else:
-        # 2. Check for Subdirectories (ImageFolder structure)
         subdirs = [d for d in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, d))]
         if len(subdirs) > 0:
             print(f"Detected ImageFolder format. Classes: {subdirs}")
             try:
-                # Use standard ImageFolder
-                raw_dataset = ImageFolder(root=folder_path)
-                # Wrap it to apply transforms
+                # We use a slight hack here: We want to use our safe_loader logic, 
+                # but ImageFolder uses its own. 
+                # Ideally, we define a custom loader for ImageFolder:
+                raw_dataset = ImageFolder(
+                    root=folder_path, 
+                    loader=safe_load_image # Pass our safe loader here!
+                )
                 dataset = TransformedDataset(raw_dataset, transform=active_transform)
+                dataset.classes = raw_dataset.classes 
             except Exception as e:
                 raise RuntimeError(f"Failed to load ImageFolder dataset: {e}")
         else:
-            raise RuntimeError(f"Invalid Folder Structure. The selected folder must contain either an '_annotations.coco.json' file OR subfolders representing class names.")
+            raise RuntimeError(f"Invalid Folder Structure.")
 
-    # 3. Check if empty
     if len(dataset) == 0:
         raise RuntimeError("The dataset was created but contains 0 valid images.")
 
-    # 4. Create Loader
-    loader = DataLoader(
-        dataset, 
-        batch_size=batch_size, 
-        shuffle=do_shuffle, 
-        num_workers=0
-    )
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=do_shuffle, num_workers=0)
     
-    # Extract class names to return
     if hasattr(dataset, 'classes'):
         class_names = dataset.classes
     elif hasattr(dataset, 'coco'):
         class_names = dataset.classes
     else:
-        # Fallback for wrapped ImageFolder
         class_names = dataset.subset.classes
 
     return loader, class_names
